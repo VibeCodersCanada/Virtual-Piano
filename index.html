@@ -1,0 +1,309 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Virtual Piano</title>
+
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#0a0a0f;color:#e0e0f0;font-family:monospace;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;gap:20px}
+h1{color:#ffd166;font-size:20px}
+
+.controls{display:flex;gap:12px;align-items:center;flex-wrap:wrap;justify-content:center;font-size:12px}
+
+select,input{
+background:#1a1a28;color:#fff;border:1px solid #2a2a3f;
+padding:6px 10px;border-radius:6px;font-family:monospace}
+
+.piano{display:flex;position:relative;height:180px;user-select:none}
+
+.white-key{
+width:42px;height:160px;background:linear-gradient(to bottom,#e8e8e8,#fff);
+border:1px solid #999;border-radius:0 0 6px 6px;
+cursor:pointer;position:relative;z-index:1;
+display:flex;align-items:flex-end;justify-content:center;
+padding-bottom:8px;font-size:10px;color:#555}
+
+.white-key.active{background:linear-gradient(to bottom,#b0d0ff,#d0e8ff)}
+
+.black-key{
+width:26px;height:100px;background:linear-gradient(to bottom,#222,#000);
+border-radius:0 0 5px 5px;
+cursor:pointer;position:absolute;z-index:2;top:0;
+display:flex;align-items:flex-end;justify-content:center;
+padding-bottom:6px;font-size:9px;color:#666}
+
+.black-key.active{background:linear-gradient(to bottom,#334,#223)}
+
+.visualizer{
+width:600px;height:80px;border-radius:8px;
+background:#0a0a0f;border:1px solid #2a2a3f}
+
+#record-btn{background:#ff3f3f;color:#fff;border:none;padding:8px 16px;border-radius:6px;cursor:pointer}
+#playback-btn{background:#06d6a0;color:#000;border:none;padding:8px 16px;border-radius:6px;cursor:pointer;display:none}
+.recording{animation:pulse 1s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:0.5}}
+</style>
+</head>
+
+<body>
+
+<h1>🎹 Virtual Piano</h1>
+
+<div class="controls">
+<label>Octave:
+<select id="octave">
+<option>3</option><option selected>4</option><option>5</option>
+</select></label>
+
+<label>Instrument:
+<select id="instrument">
+<option value="piano">Piano</option>
+<option value="organ">Organ</option>
+<option value="synth">Synth</option>
+<option value="bell">Bell</option>
+</select></label>
+
+<label>Reverb
+<input type="range" id="reverb" min="0" max="1" step="0.01" value="0.3"></label>
+
+<label>Volume
+<input type="range" id="volume" min="0" max="1" step="0.01" value="0.7"></label>
+
+<button id="record-btn" onclick="toggleRecord()">⏺ Record</button>
+<button id="playback-btn" onclick="playRecording()">▶ Play</button>
+</div>
+
+<div class="piano" id="piano"></div>
+
+<canvas class="visualizer" id="vis"></canvas>
+
+<script>
+const ctx = new (window.AudioContext||window.webkitAudioContext)();
+const analyser = ctx.createAnalyser();
+analyser.fftSize = 2048;
+
+// ---------- AUDIO ROUTING FIX ----------
+const dryGain = ctx.createGain();
+const wetGain = ctx.createGain();
+const reverb = ctx.createConvolver();
+const reverbMix = ctx.createGain();
+
+// fake impulse response
+const len = ctx.sampleRate * 2;
+const buffer = ctx.createBuffer(2, len, ctx.sampleRate);
+
+for(let c=0;c<2;c++){
+  let data = buffer.getChannelData(c);
+  for(let i=0;i<len;i++){
+    data[i] = (Math.random()*2-1) * Math.pow(1 - i/len, 2);
+  }
+}
+
+reverb.buffer = buffer;
+
+// routing
+dryGain.connect(analyser);
+wetGain.connect(reverb);
+reverb.connect(reverbMix);
+reverbMix.connect(analyser);
+analyser.connect(ctx.destination);
+
+const NOTES=['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+const WHITE=['C','D','E','F','G','A','B'];
+const BLACK={'C#':1,'D#':2,'F#':4,'G#':5,'A#':6};
+
+let activeOscs = {};
+let recording=false,recordStart=0,recorded=[];
+
+function freq(note,oct){
+  let i=NOTES.indexOf(note.replace(/\d/g,''));
+  return 440*Math.pow(2,(i-9+(oct-4)*12)/12);
+}
+
+// ---------- FIXED PLAY ----------
+function playNote(note,oct){
+  if(ctx.state==="suspended") ctx.resume();
+
+  const now=ctx.currentTime;
+  const f=freq(note,oct);
+  const vol=parseFloat(volume.value);
+  const inst=instrument.value;
+
+  const master=ctx.createGain();
+  master.gain.value=1;
+
+  master.connect(dryGain);
+  master.connect(wetGain);
+
+  reverbMix.gain.value=parseFloat(reverb.value);
+
+  if(inst==="piano"){
+    const osc=ctx.createOscillator();
+    osc.type="triangle";
+    osc.frequency.value=f;
+
+    const g=ctx.createGain();
+    g.gain.setValueAtTime(vol,now);
+    g.gain.exponentialRampToValueAtTime(0.001,now+1.5);
+
+    osc.connect(g);
+    g.connect(master);
+
+    osc.start(now);
+    osc.stop(now+1.5);
+
+    activeOscs[note+oct]=[osc,g];
+  }
+
+  else if(inst==="synth"){
+    const osc=ctx.createOscillator();
+    const filt=ctx.createBiquadFilter();
+
+    osc.type="sawtooth";
+    osc.frequency.value=f;
+
+    filt.type="lowpass";
+    filt.frequency.setValueAtTime(2000,now);
+    filt.frequency.exponentialRampToValueAtTime(500,now+0.5);
+
+    const g=ctx.createGain();
+    g.gain.setValueAtTime(vol,now);
+    g.gain.exponentialRampToValueAtTime(0.001,now+1.2);
+
+    osc.connect(filt);
+    filt.connect(g);
+    g.connect(master);
+
+    osc.start(now);
+    osc.stop(now+1.2);
+  }
+
+  else if(inst==="organ"){
+    [1,2,3].forEach(h=>{
+      const osc=ctx.createOscillator();
+      osc.type="sine";
+      osc.frequency.value=f*h;
+
+      const g=ctx.createGain();
+      g.gain.value=vol*0.3;
+
+      osc.connect(g);
+      g.connect(master);
+
+      osc.start(now);
+
+      activeOscs[note+oct]=activeOscs[note+oct]||[];
+      activeOscs[note+oct].push(osc);
+    });
+  }
+
+  else if(inst==="bell"){
+    [1,2.7,5.4].forEach((r,i)=>{
+      const osc=ctx.createOscillator();
+      osc.type="sine";
+      osc.frequency.value=f*r;
+
+      const g=ctx.createGain();
+      g.gain.value=vol*(i===0?0.7:i===1?0.3:0.1);
+
+      osc.connect(g);
+      g.connect(master);
+
+      osc.start(now);
+      osc.stop(now+2.5);
+    });
+  }
+
+  if(recording){
+    recorded.push({note,oct,time:Date.now()-recordStart});
+  }
+}
+
+// ---------- FIXED STOP ----------
+function stopNote(note,oct){
+  let key=note+oct;
+  if(activeOscs[key]){
+    activeOscs[key].forEach(o=>{
+      try{o.stop(ctx.currentTime+0.05)}catch(e){}
+    });
+    delete activeOscs[key];
+  }
+}
+
+// ---------- PIANO ----------
+function build(){
+  const piano=document.getElementById("piano");
+  let whiteIndex=0;
+
+  [3,4,5].forEach(oct=>{
+    WHITE.forEach(n=>{
+      const k=document.createElement("div");
+      k.className="white-key";
+      k.dataset.note=n;
+      k.dataset.oct=oct;
+      k.innerHTML=n;
+
+      k.onmousedown=()=>playNote(n,oct);
+      k.onmouseup=()=>stopNote(n,oct);
+
+      piano.appendChild(k);
+
+      if(BLACK[n+"#"]!==undefined && n!=="E"&&n!=="B"){
+        const b=document.createElement("div");
+        b.className="black-key";
+        b.style.left=(whiteIndex*42+28)+"px";
+        b.dataset.note=n+"#";
+        b.dataset.oct=oct;
+
+        b.onmousedown=(e)=>{e.stopPropagation();playNote(n+"#",oct);};
+        b.onmouseup=()=>stopNote(n+"#",oct);
+
+        piano.appendChild(b);
+      }
+
+      whiteIndex++;
+    });
+  });
+}
+
+document.addEventListener("keydown",e=>{
+  if(e.repeat) return;
+
+  const map={a:"C",w:"C#",s:"D",e:"D#",d:"E",f:"F",t:"F#",g:"G",y:"G#",h:"A",u:"A#",j:"B"};
+  if(map[e.key]){
+    let oct=parseInt(octave.value);
+    playNote(map[e.key],oct);
+  }
+});
+
+// ---------- VISUALIZER FIX ----------
+const c=document.getElementById("vis");
+const cx=c.getContext("2d");
+const data=new Uint8Array(analyser.frequencyBinCount);
+
+function draw(){
+  requestAnimationFrame(draw);
+  analyser.getByteTimeDomainData(data);
+
+  cx.fillStyle="rgba(10,10,15,0.3)";
+  cx.fillRect(0,0,600,80);
+
+  cx.beginPath();
+  cx.strokeStyle="#ffd166";
+
+  for(let i=0;i<data.length;i++){
+    let x=i/data.length*600;
+    let y=(data[i]-128)*0.3+40;
+
+    i?cx.lineTo(x,y):cx.moveTo(x,y);
+  }
+
+  cx.stroke();
+}
+
+build();
+draw();
+</script>
+</body>
+</html>
