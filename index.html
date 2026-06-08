@@ -2,54 +2,62 @@
 <html>
 <head>
 <meta charset="UTF-8">
-<title>Virtual Piano</title>
+<title>Virtual Piano Pro</title>
 
 <style>
 body{
 margin:0;background:#0a0a0f;color:white;
 font-family:monospace;display:flex;
 flex-direction:column;align-items:center;
-justify-content:center;min-height:100vh;gap:15px;
+gap:15px;min-height:100vh;justify-content:center;
 }
 
 h1{color:#ffd166}
 
-.controls{display:flex;gap:10px;flex-wrap:wrap;justify-content:center}
+.controls{display:flex;gap:10px;flex-wrap:wrap}
 
-.piano{display:flex;position:relative}
+.piano{
+display:flex;position:relative;height:180px;
+user-select:none;
+}
 
 .white-key{
 width:42px;height:160px;background:white;
-border:1px solid #999;display:flex;
-align-items:flex-end;justify-content:center;
-font-size:10px;color:#333;cursor:pointer;
+border:1px solid #aaa;
+display:flex;align-items:flex-end;
+justify-content:center;font-size:10px;
+cursor:pointer;color:#333;
 }
 
 .white-key.active{background:#b0d0ff}
 
 .black-key{
-width:26px;height:100px;background:black;
-position:absolute;color:#666;font-size:9px;
-display:flex;justify-content:center;
-align-items:flex-end;cursor:pointer;
+width:26px;height:100px;
+background:black;position:absolute;
+color:#666;font-size:9px;
+display:flex;align-items:flex-end;
+justify-content:center;cursor:pointer;
 }
 
 .black-key.active{background:#334}
+
+button{
+padding:8px 12px;border:none;cursor:pointer;
+font-family:monospace;
+}
+
+#record{background:#ff3f3f;color:white}
+#play{background:#06d6a0;color:black}
 </style>
 </head>
 
 <body>
 
-<h1>🎹 Virtual Piano</h1>
+<h1>🎹 Virtual Piano Pro</h1>
 
 <div class="controls">
-<select id="instrument">
-<option value="piano">Piano</option>
-<option value="synth">Synth</option>
-<option value="organ">Organ</option>
-<option value="bell">Bell</option>
-</select>
-
+<button id="record" onclick="toggleRecord()">⏺ Record</button>
+<button id="play" onclick="playRecording()">▶ Play</button>
 <input id="volume" type="range" min="0" max="1" step="0.01" value="0.7">
 </div>
 
@@ -57,70 +65,116 @@ align-items:flex-end;cursor:pointer;
 
 <script>
 const ctx = new (window.AudioContext||window.webkitAudioContext)();
-
-// ✅ FIX 1: unlock audio properly
-document.body.addEventListener("click",()=>{
-  if(ctx.state==="suspended") ctx.resume();
-},{once:false});
-
-// ---------- AUDIO ROUTING ----------
 const master = ctx.createGain();
 master.connect(ctx.destination);
 
-const NOTES=['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+// 🔓 unlock audio
+document.body.addEventListener("click",()=>{
+  if(ctx.state==="suspended") ctx.resume();
+});
+
+const NOTES=["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
+const WHITE=["C","D","E","F","G","A","B"];
+const BLACK={"C#":1,"D#":2,"F#":4,"G#":5,"A#":6};
+
+let recording=false;
+let recorded=[];
+let startTime=0;
 
 function freq(note,oct){
-  let i=NOTES.indexOf(note.replace(/\d/g,''));
+  let i=NOTES.indexOf(note.replace(/\d/g,""));
   return 440*Math.pow(2,(i-9+(oct-4)*12)/12);
 }
 
+// 🎧 PLAY NOTE
 function play(note,oct){
   const now=ctx.currentTime;
   const f=freq(note,oct);
   const vol=parseFloat(volume.value);
 
-  const g=ctx.createGain();
-  g.gain.value=vol;
-  g.connect(master);
-
   const osc=ctx.createOscillator();
+  const g=ctx.createGain();
+
+  osc.type="triangle";
   osc.frequency.value=f;
 
-  const type=instrument.value;
-
-  if(type==="synth") osc.type="sawtooth";
-  else if(type==="organ") osc.type="sine";
-  else osc.type="triangle";
-
-  osc.connect(g);
-
-  // envelope (IMPORTANT FIX)
   g.gain.setValueAtTime(vol,now);
   g.gain.exponentialRampToValueAtTime(0.001,now+1.5);
 
+  osc.connect(g);
+  g.connect(master);
+
   osc.start(now);
   osc.stop(now+1.5);
+
+  if(recording){
+    recorded.push({
+      note,oct,
+      time:Date.now()-startTime
+    });
+  }
 }
 
-// ---------- PIANO ----------
+// 🧠 BUILD REAL PIANO
 function build(){
   const piano=document.getElementById("piano");
-  const keys=["C","D","E","F","G","A","B"];
-  let x=0;
+  const octaves=[3,4,5];
 
-  keys.forEach(n=>{
-    const k=document.createElement("div");
-    k.className="white-key";
-    k.textContent=n;
+  let whiteIndex=0;
 
-    k.onmousedown=()=>play(n,4);
-    k.onmouseup=()=>k.classList.remove("active");
+  octaves.forEach(oct=>{
+    WHITE.forEach(n=>{
+      const k=document.createElement("div");
+      k.className="white-key";
+      k.textContent=n;
 
-    piano.appendChild(k);
-    x++;
+      k.onmousedown=()=>play(n,oct);
+
+      piano.appendChild(k);
+
+      // black keys
+      if(BLACK[n+"#"]!==undefined && n!=="E" && n!=="B"){
+        const b=document.createElement("div");
+        b.className="black-key";
+        b.style.left=(whiteIndex*42+28)+"px";
+        b.textContent=n+"#";
+
+        b.onmousedown=(e)=>{
+          e.stopPropagation();
+          play(n+"#",oct);
+        };
+
+        piano.appendChild(b);
+      }
+
+      whiteIndex++;
+    });
   });
 }
 
+// ⏺ RECORDING
+function toggleRecord(){
+  recording=!recording;
+
+  if(recording){
+    recorded=[];
+    startTime=Date.now();
+    record.textContent="⏹ Stop";
+  }else{
+    record.textContent="⏺ Record";
+  }
+}
+
+// ▶ PLAYBACK
+function playRecording(){
+  recorded.forEach(n=>{
+    setTimeout(()=>{
+      play(n.note,n.oct);
+    },n.time);
+  });
+}
+
+// ⌨️ KEYBOARD
 document.addEventListener("keydown",e=>{
   const map={a:"C",s:"D",d:"E",f:"F",g:"G",h:"A",j:"B"};
   if(map[e.key]) play(map[e.key],4);
